@@ -357,6 +357,22 @@ class ConservativeSAC(object):
 
         return new_train_states, new_target_qf_params, metrics
 
+    @partial(jax.jit, static_argnames=('self'))
+    def q_values(self, observations, actions, rng=None):
+        rng = next_rng() if rng is None else rng
+        rng_generator = JaxRNG(rng)
+        @wrap_function_with_rng(rng_generator())
+        def forward_qf(rng, *args, **kwargs):
+            return self.qf.apply(
+                *args, **kwargs,
+                rngs=JaxRNG(rng)(self.qf.rng_keys())
+            )
+        q1 = forward_qf(self._train_states['qf1'].params, observations, actions)
+        q2 = forward_qf(self._train_states['qf2'].params, observations, actions)
+        qs = jnp.minimum(q1, q2)
+
+        return qs
+
     @property
     def model_keys(self):
         return self._model_keys

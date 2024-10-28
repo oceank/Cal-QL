@@ -1,3 +1,4 @@
+import pickle
 import d4rl
 import gym
 import numpy as np
@@ -89,6 +90,12 @@ class ReplayBuffer(object):
             yield self.sample(batch_size)
             i += 1
 
+    def save_pickle(self, filepath):
+        with open(filepath, 'wb') as fout:
+            pickle.dump(self, fout)
+
+
+
     @property
     def total_steps(self):
         return self._total_steps
@@ -103,6 +110,12 @@ class ReplayBuffer(object):
             dones=self._dones[:self._size, ...],
             mc_returns=self._mc_returns[:self._size, ...]
         )
+
+# load a replay buffer from a file that was saved by save_pickle()
+def load_pickle(filepath):
+    with open(filepath, 'rb') as fin:
+        data = pickle.load(fin)
+    return data
 
 # based on https://github.com/Farama-Foundation/D4RL/blob/master/d4rl/__init__.py
 def get_d4rl_dataset_with_mc_calculation(env, reward_scale, reward_bias, clip_action, gamma):
