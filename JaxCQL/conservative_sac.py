@@ -11,10 +11,11 @@ import optax
 from jax.flatten_util import ravel_pytree
 
 from .jax_utils import (
-    next_rng, value_and_multi_grad, mse_loss, JaxRNG, wrap_function_with_rng,
+    next_rng, value_and_multi_grad, mse_loss, rae_loss, JaxRNG, wrap_function_with_rng,
     collect_jax_metrics
 )
 from .model import Scalar, update_target_network
+
 
 
 class ConservativeSAC(object):
@@ -357,21 +358,187 @@ class ConservativeSAC(object):
 
         return new_train_states, new_target_qf_params, metrics
 
+
+
+    def train_critic(self, batch):
+        self._total_steps += 1
+        updated_train_states, self._target_qf_params, metrics = self._train_critic_step(
+            self._train_states, self._target_qf_params, next_rng(), batch
+        )
+        self._train_states['qf1'] = updated_train_states['qf1']
+        self._train_states['qf2'] = updated_train_states['qf2']
+
+        return metrics
+
+
+
     @partial(jax.jit, static_argnames=('self'))
+    def _train_critic_step(self, train_states, target_qf_params, rng, batch):
+        rng_generator = JaxRNG(rng)
+        def loss_fn(train_params, policy_params):
+            observations = batch['observations']
+            actions = batch['actions']
+            rewards = batch['rewards']
+            next_observations = batch['next_observations']
+            dones = batch['dones']
+
+            loss_collection = {}
+
+            @wrap_function_with_rng(rng_generator())
+            def forward_policy(rng, *args, **kwargs):
+                return self.policy.apply(
+                    *args, **kwargs,
+                    rngs=JaxRNG(rng)(self.policy.rng_keys())
+                )
+
+            @wrap_function_with_rng(rng_generator())
+            def forward_qf(rng, *args, **kwargs):
+                return self.qf.apply(
+                    *args, **kwargs,
+                    rngs=JaxRNG(rng)(self.qf.rng_keys())
+                )
+
+            '''
+            new_actions, log_pi = forward_policy(train_params['policy'], observations)
+
+            if self.config.use_automatic_entropy_tuning:
+                alpha_loss = -self.log_alpha.apply(train_params['log_alpha']) * (log_pi + self.config.target_entropy).mean()
+                loss_collection['log_alpha'] = alpha_loss
+                alpha = jnp.exp(self.log_alpha.apply(train_params['log_alpha'])) * self.config.alpha_multiplier
+            else:
+                alpha_loss = 0.0
+                alpha = self.config.alpha_multiplier
+            '''
+
+            """ Q function loss """
+            q1_pred = forward_qf(train_params['qf1'], observations, actions)
+            q2_pred = forward_qf(train_params['qf2'], observations, actions)
+
+            new_next_actions, next_log_pi = forward_policy(
+                policy_params, next_observations
+            )
+            target_q_values = jnp.minimum(
+                forward_qf(target_qf_params['qf1'], next_observations, new_next_actions),
+                forward_qf(target_qf_params['qf2'], next_observations, new_next_actions),
+            )
+
+            #if self.config.backup_entropy:
+            #    target_q_values = target_q_values - alpha * next_log_pi
+
+            td_target = jax.lax.stop_gradient(
+                rewards + (1. - dones) * self.config.discount * target_q_values
+            )
+            qf1_loss = mse_loss(q1_pred, td_target)
+            qf2_loss = mse_loss(q2_pred, td_target)
+
+            loss_collection['qf1'] = qf1_loss
+            loss_collection['qf2'] = qf2_loss
+            return tuple(loss_collection[key] for key in ['qf1', 'qf2']), locals()
+
+        train_model_keys = ['qf1', 'qf2']
+        train_params = {key: train_states[key].params for key in train_model_keys}
+        (_, aux_values), grads = value_and_multi_grad(loss_fn, len(train_model_keys), has_aux=True)(train_params, train_states['policy'].params)
+        qf1_loss_gradient = jnp.linalg.norm(ravel_pytree(grads[train_model_keys.index("qf1")]['qf1'])[0])
+        qf2_loss_gradient = jnp.linalg.norm(ravel_pytree(grads[train_model_keys.index("qf2")]['qf2'])[0])
+
+
+        new_train_states = {
+            key: train_states[key].apply_gradients(grads=grads[i][key])
+            for i, key in enumerate(train_model_keys)
+        }
+
+        new_target_qf_params = {}
+        new_target_qf_params['qf1'] = update_target_network(
+            new_train_states['qf1'].params, target_qf_params['qf1'],
+            self.config.soft_target_update_rate
+        )
+        new_target_qf_params['qf2'] = update_target_network(
+            new_train_states['qf2'].params, target_qf_params['qf2'],
+            self.config.soft_target_update_rate
+        )
+
+        metrics = collect_jax_metrics(
+            aux_values,
+            ['qf1_loss', 'qf2_loss', 'q1_pred', 'q2_pred', 'target_q_values', 'qf1_loss_gradient', 'qf2_loss_gradient']
+        )
+        metrics.update(qf1_loss_gradient=qf1_loss_gradient, qf2_loss_gradient=qf2_loss_gradient)
+
+        return new_train_states, new_target_qf_params, metrics
+
+
+    @partial(jax.jit, static_argnames={'self'})
     def q_values(self, observations, actions, rng=None):
         rng = next_rng() if rng is None else rng
         rng_generator = JaxRNG(rng)
+
         @wrap_function_with_rng(rng_generator())
         def forward_qf(rng, *args, **kwargs):
             return self.qf.apply(
                 *args, **kwargs,
                 rngs=JaxRNG(rng)(self.qf.rng_keys())
             )
-        q1 = forward_qf(self._train_states['qf1'].params, observations, actions)
-        q2 = forward_qf(self._train_states['qf2'].params, observations, actions)
+        q1 = forward_qf(self._train_states["qf1"].params,  observations, actions)
+        q2 = forward_qf(self._train_states["qf2"].params,  observations, actions)
         qs = jnp.minimum(q1, q2)
 
         return qs
+
+    @partial(jax.jit, static_argnames={'self'})
+    def eval_critic(self, rng, eval_dataset):
+
+        rng_generator = JaxRNG(rng)
+
+        observations = eval_dataset['observations']
+        actions = eval_dataset['actions']
+        rewards = eval_dataset['rewards']
+        next_observations = eval_dataset['next_observations']
+        dones = eval_dataset['dones']
+        mc_returns = eval_dataset['mc_returns']
+
+        @wrap_function_with_rng(rng_generator())
+        def forward_policy(rng, *args, **kwargs):
+            return self.policy.apply(
+                *args, **kwargs,
+                rngs=JaxRNG(rng)(self.policy.rng_keys())
+            )
+
+        @wrap_function_with_rng(rng_generator())
+        def forward_qf(rng, *args, **kwargs):
+            return self.qf.apply(
+                *args, **kwargs,
+                rngs=JaxRNG(rng)(self.qf.rng_keys())
+            )
+
+
+        """ Q function loss """
+        q1_pred = forward_qf(self._train_states["qf1"].params, observations, actions)
+        q2_pred = forward_qf(self._train_states["qf2"].params, observations, actions)
+        pred_q = jnp.minimum(q1_pred, q2_pred)
+
+        new_next_actions, next_log_pi = forward_policy(self._train_states['policy'].params, next_observations)
+
+        target_q_values = jnp.minimum(
+            forward_qf(self._target_qf_params['qf1'], next_observations, new_next_actions),
+            forward_qf(self._target_qf_params['qf2'], next_observations, new_next_actions),
+        )
+
+        # ToDo
+        # if self.config.backup_entropy:
+        #    target_q_values = target_q_values - alpha * next_log_pi
+
+        td_target = jax.lax.stop_gradient(
+            rewards + (1. - dones) * self.config.discount * target_q_values
+        )
+        
+        bellman_error = mse_loss(pred_q, td_target)
+
+        # averaged normalized mse
+        rae_error = rae_loss(pred_q, mc_returns)
+
+        return bellman_error, rae_error
+
+
+
 
     @property
     def model_keys(self):

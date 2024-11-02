@@ -44,6 +44,24 @@ class ReplayBuffer(object):
         self._size = 0
         self._initialized = True
 
+    def get_trajs(self):
+        trajs = []
+        new_traj = {"observations":[], "actions": [], "next_observations": [], "rewards": [], "dones": [], "mc_returns": []}
+
+        for i in range(self._size):
+            new_traj["observations"].append(self._observations[i])
+            new_traj["actions"].append(self._actions[i])
+            new_traj["next_observations"].append(self._next_observations[i])
+            new_traj["rewards"].append(self._rewards[i])
+            new_traj["dones"].append(self._dones[i])
+            new_traj["mc_returns".append(self._mc_returns[i])]
+
+            if self._dones[i]:
+                trajs.append(new_traj)
+                new_traj = {"observations":[], "actions": [], "next_observations": [], "rewards": [], "dones": [], "mc_returns": []}
+        
+        return trajs 
+
     def add_sample(self, observation, action, reward, next_observation, done, mc_returns=-1):
         if not self._initialized:
             self._init_storage(observation.size, action.size)

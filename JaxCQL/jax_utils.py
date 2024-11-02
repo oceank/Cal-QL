@@ -56,6 +56,9 @@ def extend_and_repeat(tensor, axis, repeat):
 def mse_loss(val, target):
     return jnp.mean(jnp.square(val - target))
 
+def rae_loss(val, target):
+    return jnp.mean(jnp.abs((val - target)/target))
+
 
 def value_and_multi_grad(fun, n_outputs, argnums=0, has_aux=False):
     def select_output(index):
