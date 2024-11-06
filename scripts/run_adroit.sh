@@ -2,9 +2,10 @@ export D4RL_SUPPRESS_IMPORT_ERROR=1
 # export CUDA_VISIBLE_DEVICES=0
 # export WANDB_DISABLED=True
 
-algo=$1
-seed=$2
-env=$3
+logging_output_dir=$1
+algo=$2
+seed=$3
+env=$4
 # env=pen-binary-v0
 # env=door-binary-v0
 # env=relocate-binary-v0
@@ -25,7 +26,6 @@ else
    exit 1
 fi
 
-logging_output_dir=/home/suj/Desktop/projects/Cal-QL/experiment_result
 logging_prefix="$algo"
 
 XLA_PYTHON_CLIENT_PREALLOCATE=false python -m JaxCQL.conservative_sac_aligned_main \
