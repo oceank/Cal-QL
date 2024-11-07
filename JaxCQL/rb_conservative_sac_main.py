@@ -225,9 +225,13 @@ def main(argv):
         with Timer() as eval_timer:
             if do_eval:
                 print(f"Starting Evaluation for Epoch {epoch}")
+                if epoch <= FLAGS.n_pretrain_epochs:
+                    eval_n_trajs = FLAGS.eval_episodes_per_evaluation # used for offline validation
+                else:
+                    eval_n_trajs = FLAGS.eval_n_trajs # used for trakcing the fine-tuned policy
                 trajs = eval_sampler.sample(
                     sampler_policy.update_params(sac.train_params['policy']),
-                    FLAGS.eval_n_trajs, deterministic=True
+                    eval_n_trajs, deterministic=True
                 )
 
                 metrics['evaluation/average_return'] = np.mean([np.sum(t['rewards']) for t in trajs])
