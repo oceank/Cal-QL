@@ -1,6 +1,9 @@
+from typing import Optional, Union, Tuple, Dict
+
 import pickle
 import d4rl
 import gym
+import h5py
 import numpy as np
 import collections
 
@@ -12,6 +15,10 @@ ENV_CONFIG = {
     "adroit-binary": {
         "reward_pos": 0.0,
         "reward_neg": -1.0,
+    },
+    "kitchen": {
+        "reward_pos": 4.0, # assume the tasks has a list of 4 goals to reach; whenver the agent reaches a goal, it gets 1.0 reward
+        "reward_neg": 0.0,
     }
 }
 
@@ -128,6 +135,21 @@ class ReplayBuffer(object):
             dones=self._dones[:self._size, ...],
             mc_returns=self._mc_returns[:self._size, ...]
         )
+
+# load a buffer saved by the ReplayBuffer class in jaxrl2
+def load_dataset_h5py(filepath: str) -> Tuple[Dict, Dict[str, Union[str, int, float]]]:
+    with h5py.File(filepath, 'r') as hfile:
+        dataset_dict = {}
+        metadata = {}
+
+        for k in hfile.keys():
+            v = hfile[k]
+            if k == "metadata":
+                metadata = {kk: vv[()] if not isinstance(vv[()], np.string_) else str(vv[()]) for kk, vv in v.items()}
+            else:
+                dataset_dict[k] = v[()]
+
+        return dataset_dict, metadata
 
 # load a replay buffer from a file that was saved by save_pickle()
 def load_pickle(filepath):
@@ -304,6 +326,8 @@ def calc_return_to_go(env_name, rewards, terminals, gamma, reward_scale, reward_
         reward_neg = ENV_CONFIG["antmaze"]["reward_neg"] * reward_scale + reward_bias
     elif env_name in ["pen-binary-v0", "door-binary-v0", "relocate-binary-v0", "pen-binary", "door-binary", "relocate-binary"]:
         reward_neg = ENV_CONFIG["adroit-binary"]["reward_neg"] * reward_scale + reward_bias
+    elif "kitchen" in env_name:
+        reward_neg = ENV_CONFIG["kitchen"]["reward_neg"] * reward_scale + reward_bias
     else:
         assert not is_sparse_reward, "If you want to try on a sparse reward env, please add the reward_neg value in the ENV_CONFIG dict."
 
@@ -314,9 +338,13 @@ def calc_return_to_go(env_name, rewards, terminals, gamma, reward_scale, reward_
         For exapmle, if gamma = 0.99 and the rewards = [-1, -1, -1],
         then return_to_go = [-100, -100, -100]
         """
-        # assuming failure reward is negative
-        # use r / (1-gamma) for negative trajctory 
-        return_to_go = [float(reward_neg / (1-gamma))] * len(rewards)
+
+        if reward_neg == 0:
+            return_to_go = [float(1.0 / (1-gamma))] * len(rewards)
+        else:
+            # assuming failure reward is negative
+            # use r / (1-gamma) for negative trajctory
+            return_to_go = [float(reward_neg / (1-gamma))] * len(rewards)
     else:
         return_to_go = [0] * len(rewards)
         prev_return = 0
@@ -325,6 +353,63 @@ def calc_return_to_go(env_name, rewards, terminals, gamma, reward_scale, reward_
             prev_return = return_to_go[-i-1]
 
     return np.array(return_to_go, dtype=np.float32)
+
+
+def get_rb_dataset_with_mc_calculation(env, reward_scale, reward_bias, clip_action, gamma, offline_dataset):
+    if "kitchen" in env:
+        is_sparse_reward=True
+    else:
+        is_sparse_reward=False
+    dataset = rb_dataset_and_calc_mc(gym.make(env).unwrapped, reward_scale, reward_bias, clip_action, gamma, offline_dataset, is_sparse_reward=is_sparse_reward)
+
+    return dict(
+        observations=dataset['observations'],
+        actions=dataset['actions'],
+        next_observations=dataset['next_observations'],
+        rewards=dataset['rewards'],
+        dones=dataset['dones'],
+        mc_returns=dataset['mc_returns']
+    )
+
+# Keys of the input dataset: ['actions', 'dones', 'masks', 'next_observations', 'observations', 'rewards']
+# - mask = 1.0  if not done or "TimeLimit.truncated" in info else 0.0
+def rb_dataset_and_calc_mc(env, reward_scale, reward_bias, clip_action, gamma, dataset, terminate_on_end=False, is_sparse_reward=True):
+
+    N = dataset['rewards'].shape[0]
+    data_ = collections.defaultdict(list)
+    episodes_dict_list = []
+
+
+    # first process by traj
+    episode_step = 0
+    for i in range(N):
+        done_bool = bool(dataset['dones'][i])
+        mask_bool = dataset['masks'][i] == 0.0 # True: done or "TimeLimit.truncated" in info
+        # skip the last step of an episode if it is not done (terminated)
+        final_timestep_to_skip = mask_bool and (not done_bool)
+
+        if (not terminate_on_end) and final_timestep_to_skip or i == N-1:
+            # Skip this transition and don't apply terminals on the last step of an episode
+            pass
+        else:
+            for k in dataset:
+                if k in ['actions', 'next_observations', 'observations', 'rewards', 'dones']:
+                    data_[k].append(dataset[k][i])
+            episode_step += 1
+
+        if (done_bool or final_timestep_to_skip) and episode_step > 0:
+            episode_step = 0
+            episode_data = {}
+            for k in data_:
+                episode_data[k] = np.array(data_[k])
+
+            episode_data["rewards"] = episode_data["rewards"] * reward_scale + reward_bias
+            episode_data["mc_returns"] = calc_return_to_go(env.spec.name, episode_data["rewards"], episode_data["dones"], gamma, reward_scale, reward_bias, is_sparse_reward)
+            episode_data['actions'] = np.clip(episode_data['actions'], -clip_action, clip_action)
+            episodes_dict_list.append(episode_data)
+            data_ = collections.defaultdict(list)
+
+    return concatenate_batches(episodes_dict_list)
 
 def index_batch(batch, indices):
     indexed = {}

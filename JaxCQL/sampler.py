@@ -49,7 +49,7 @@ class TrajSampler(object):
                 """
                 Calculate Monte Carlo returns for Cal-QL
                 """
-                if "antmaze" in self.env.spec.name:
+                if ("antmaze" in self.env.spec.name) or ('kitchen' in self.env.spec.name):
                     mc_returns = calc_return_to_go(self.env.spec.name, rewards, dones, self.gamma, self.reward_scale, self.reward_bias, is_sparse_reward=True)
                 elif self.env.spec.name in  ["pen-binary-v0", "door-binary-v0", "relocate-binary-v0", "pen-binary", "door-binary", "relocate-binary"]:
                     mc_returns = calc_return_to_go(self.env.spec.name, rewards, dones, self.gamma, self.reward_scale, self.reward_bias, is_sparse_reward=True)
@@ -59,7 +59,8 @@ class TrajSampler(object):
                     if your new env has dense rewards, uncomment the above line will be fine
                     if your new env has sparse rewards, please check calc_return_to_go() in replay_buffer.py
                     """
-                    raise NotImplementedError
+                    #raise NotImplementedError
+                    mc_returns = calc_return_to_go(self.env.spec.name, rewards, dones, self.gamma, self.reward_scale, self.reward_bias, is_sparse_reward=False)
 
             if replay_buffer is not None:
                 for i in range(len(rewards)):
