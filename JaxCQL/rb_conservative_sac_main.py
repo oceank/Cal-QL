@@ -42,6 +42,7 @@ FLAGS_DEF = define_flags_with_default(
     save_model=False,
     offline_dataset_fp="",
     offline_dataset_use_buffer=True,
+    add_d4rl_dataset=False,
     offline_validation_budget=50000,
     eval_episodes_per_evaluation=3,
     batch_size=256,
@@ -102,7 +103,8 @@ def main(argv):
     expr_time_str = now.strftime("%Y%m%d-%H%M%S")
     algo = "CalQL" if FLAGS.enable_calql else "CQL"
     offline_dataset_tag = "UseBuffer" if FLAGS.offline_dataset_use_buffer else "UseNewData"
-    experiment_result_folder_name = f"ft_{algo}_{FLAGS.env}_seed{FLAGS.seed}_offlineDataset{offline_dataset_tag}_{expr_time_str}"
+    d4rl_tag = "HasD4rl" if FLAGS.add_d4rl_dataset else "NoD4RL"
+    experiment_result_folder_name = f"ft_{algo}_{FLAGS.env}_seed{FLAGS.seed}_offlineDataset{offline_dataset_tag}_{d4rl_tag}_{expr_time_str}"
     expr_dir = f"{FLAGS.logging.output_dir}/{experiment_result_folder_name}"
     FLAGS.logging.output_dir = expr_dir
     
@@ -126,7 +128,7 @@ def main(argv):
 
     # load offline dataset
     offline_dataset, _ = load_dataset_h5py(FLAGS.offline_dataset_fp)
-    dataset = get_rb_dataset_with_mc_calculation(FLAGS.env, FLAGS.reward_scale, FLAGS.reward_bias, FLAGS.clip_action, FLAGS.cql.discount, offline_dataset)
+    dataset = get_rb_dataset_with_mc_calculation(FLAGS.env, FLAGS.reward_scale, FLAGS.reward_bias, FLAGS.clip_action, FLAGS.cql.discount, offline_dataset, FLAGS.add_d4rl_dataset)
     use_goal = False
 
     # offline RL validation setup: similar to the setup for online RL validation

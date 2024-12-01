@@ -19,7 +19,11 @@ ENV_CONFIG = {
     "kitchen": {
         "reward_pos": 4.0, # assume the tasks has a list of 4 goals to reach; whenver the agent reaches a goal, it gets 1.0 reward
         "reward_neg": 0.0,
-    }
+    },
+    "maze2d": {
+        "reward_pos": 1.0,
+        "reward_neg": 0.0,
+    },
 }
 
 class ReplayBuffer(object):
@@ -328,6 +332,8 @@ def calc_return_to_go(env_name, rewards, terminals, gamma, reward_scale, reward_
         reward_neg = ENV_CONFIG["adroit-binary"]["reward_neg"] * reward_scale + reward_bias
     elif "kitchen" in env_name:
         reward_neg = ENV_CONFIG["kitchen"]["reward_neg"] * reward_scale + reward_bias
+    elif "maze2d" in env_name:
+        reward_neg = ENV_CONFIG["maze2d"]["reward_neg"] * reward_scale + reward_bias
     else:
         assert not is_sparse_reward, "If you want to try on a sparse reward env, please add the reward_neg value in the ENV_CONFIG dict."
 
@@ -355,12 +361,13 @@ def calc_return_to_go(env_name, rewards, terminals, gamma, reward_scale, reward_
     return np.array(return_to_go, dtype=np.float32)
 
 
-def get_rb_dataset_with_mc_calculation(env, reward_scale, reward_bias, clip_action, gamma, offline_dataset):
-    if "kitchen" in env:
+def get_rb_dataset_with_mc_calculation(env, reward_scale, reward_bias, clip_action, gamma, offline_dataset, add_d4rl_dataset=False):
+    if "kitchen" in env or "maze2d" in env:
         is_sparse_reward=True
     else:
         is_sparse_reward=False
-    dataset = rb_dataset_and_calc_mc(gym.make(env).unwrapped, reward_scale, reward_bias, clip_action, gamma, offline_dataset, is_sparse_reward=is_sparse_reward)
+
+    dataset = rb_dataset_and_calc_mc(gym.make(env).unwrapped, reward_scale, reward_bias, clip_action, gamma, offline_dataset, is_sparse_reward=is_sparse_reward, add_d4rl_dataset=add_d4rl_dataset)
 
     return dict(
         observations=dataset['observations'],
@@ -373,7 +380,7 @@ def get_rb_dataset_with_mc_calculation(env, reward_scale, reward_bias, clip_acti
 
 # Keys of the input dataset: ['actions', 'dones', 'masks', 'next_observations', 'observations', 'rewards']
 # - mask = 1.0  if not done or "TimeLimit.truncated" in info else 0.0
-def rb_dataset_and_calc_mc(env, reward_scale, reward_bias, clip_action, gamma, dataset, terminate_on_end=False, is_sparse_reward=True):
+def rb_dataset_and_calc_mc(env, reward_scale, reward_bias, clip_action, gamma, dataset, terminate_on_end=False, is_sparse_reward=True, add_d4rl_dataset=False):
 
     N = dataset['rewards'].shape[0]
     data_ = collections.defaultdict(list)
@@ -409,7 +416,20 @@ def rb_dataset_and_calc_mc(env, reward_scale, reward_bias, clip_action, gamma, d
             episodes_dict_list.append(episode_data)
             data_ = collections.defaultdict(list)
 
-    return concatenate_batches(episodes_dict_list)
+    dataset = concatenate_batches(episodes_dict_list)
+
+    if add_d4rl_dataset:
+        if "pen" in env.spec.name: # a tempoerary walk around to use the human dataset with the dataset collected by our approach
+            env_name = "pen-human-v0" # similar to the other two Adroit Hand envs, door and hammer"
+        new_env = gym.make(env_name).unwrapped
+        d4rl_dataset = qlearning_dataset_and_calc_mc(new_env, reward_scale, reward_bias, clip_action, gamma, is_sparse_reward=is_sparse_reward)
+        d4rl_dataset['dones'] = d4rl_dataset['terminals']
+        d4rl_dataset['masks'] = d4rl_dataset['terminals'] * d4rl_dataset['timeouts']
+        dataset[i].pop('terminals', None)
+        dataset[i].pop('timeouts', None)
+        for key in dataset:
+            dataset[key] = np.concatenate([dataset[key], d4rl_dataset[key]], axis=0).astype(np.float32)
+    return dataset
 
 def index_batch(batch, indices):
     indexed = {}
