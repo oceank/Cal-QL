@@ -106,7 +106,7 @@ def main(argv):
     algo = "CalQL" if FLAGS.enable_calql else "CQL"
     offline_dataset_tag = "UseBuffer" if FLAGS.offline_dataset_use_buffer else "UseNewData"
     d4rl_tag = "HasD4rl" if FLAGS.add_d4rl_dataset else "NoD4RL"
-    experiment_result_folder_name = f"ft_{algo}_{FLAGS.env}_seed{FLAGS.seed}_offlineDataset{offline_dataset_tag}_{d4rl_tag}_B{FLAGS.max_online_env_steps//1000}k_{expr_time_str}"
+    experiment_result_folder_name = f"ft_{algo}_{FLAGS.env}_seed{FLAGS.seed}_offlineDataset{offline_dataset_tag}_{d4rl_tag}_B{int(FLAGS.max_online_env_steps//1000)}k_{expr_time_str}"
     expr_dir = f"{FLAGS.logging.output_dir}/{experiment_result_folder_name}"
     FLAGS.logging.output_dir = expr_dir
     
@@ -157,12 +157,13 @@ def main(argv):
         max_online_env_steps = FLAGS.max_online_env_steps - FLAGS.initial_online_stop_step - FLAGS.online_validation_budget_for_offline_dataset_collection - offline_dataset_size - FLAGS.offline_validation_budget
     else:
         max_online_env_steps = FLAGS.max_online_env_steps - FLAGS.initial_online_stop_step - FLAGS.offline_validation_budget
-    replay_buffer_size = max_online_env_steps 
+    replay_buffer_size = int(max_online_env_steps)
     replay_buffer = ReplayBuffer(replay_buffer_size)
 
     observation_dim = eval_sampler.env.observation_space.shape[0]
     action_dim = eval_sampler.env.action_space.shape[0]
 
+    #print(f"replay_bufer_size:{replay_buffer_size}, observation_dim: {observation_dim}, action_dim:{action_dim}")
     policy = TanhGaussianPolicy(
         observation_dim, action_dim, FLAGS.policy_arch, FLAGS.orthogonal_init,
         FLAGS.policy_log_std_multiplier, FLAGS.policy_log_std_offset
