@@ -41,7 +41,9 @@ FLAGS_DEF = define_flags_with_default(
     seed=42,
     save_model=False,
     offline_dataset_fp="",
+    initial_online_stop_step=800000,
     offline_dataset_use_buffer=True,
+    online_validation_budget_for_offline_dataset_collection=50000,
     add_d4rl_dataset=False,
     offline_validation_budget=50000,
     eval_episodes_per_evaluation=3,
@@ -104,7 +106,7 @@ def main(argv):
     algo = "CalQL" if FLAGS.enable_calql else "CQL"
     offline_dataset_tag = "UseBuffer" if FLAGS.offline_dataset_use_buffer else "UseNewData"
     d4rl_tag = "HasD4rl" if FLAGS.add_d4rl_dataset else "NoD4RL"
-    experiment_result_folder_name = f"ft_{algo}_{FLAGS.env}_seed{FLAGS.seed}_offlineDataset{offline_dataset_tag}_{d4rl_tag}_{expr_time_str}"
+    experiment_result_folder_name = f"ft_{algo}_{FLAGS.env}_seed{FLAGS.seed}_offlineDataset{offline_dataset_tag}_{d4rl_tag}_B{FLAGS.max_online_env_steps//1000}k_{expr_time_str}"
     expr_dir = f"{FLAGS.logging.output_dir}/{experiment_result_folder_name}"
     FLAGS.logging.output_dir = expr_dir
     
@@ -128,6 +130,7 @@ def main(argv):
 
     # load offline dataset
     offline_dataset, _ = load_dataset_h5py(FLAGS.offline_dataset_fp)
+    offline_dataset_size = offline_dataset['rewards'].shape[0]
     dataset = get_rb_dataset_with_mc_calculation(FLAGS.env, FLAGS.reward_scale, FLAGS.reward_bias, FLAGS.clip_action, FLAGS.cql.discount, offline_dataset, FLAGS.add_d4rl_dataset)
     use_goal = False
 
@@ -147,7 +150,15 @@ def main(argv):
     set_random_seed(FLAGS.seed)
     eval_sampler = TrajSampler(gym.make(FLAGS.env).unwrapped, use_goal, gamma=FLAGS.cql.discount)
     train_sampler = TrajSampler(gym.make(FLAGS.env).unwrapped, use_goal, use_mc=True, gamma=FLAGS.cql.discount, reward_scale=FLAGS.reward_scale, reward_bias=FLAGS.reward_bias,)
-    replay_buffer = ReplayBuffer(FLAGS.replay_buffer_size)
+
+
+    max_online_env_steps = None
+    if not FLAGS.offline_dataset_use_buffer: # collected by the best-pooling policy
+        max_online_env_steps = FLAGS.max_online_env_steps - FLAGS.initial_online_stop_step - FLAGS.online_validation_budget_for_offline_dataset_collection - offline_dataset_size - FLAGS.offline_validation_budget
+    else:
+        max_online_env_steps = FLAGS.max_online_env_steps - FLAGS.initial_online_stop_step - FLAGS.offline_validation_budget
+    replay_buffer_size = max_online_env_steps 
+    replay_buffer = ReplayBuffer(replay_buffer_size)
 
     observation_dim = eval_sampler.env.observation_space.shape[0]
     action_dim = eval_sampler.env.action_space.shape[0]
@@ -220,9 +231,9 @@ def main(argv):
         2. every FLAGS.offline_eval_every_n_epoch for offline phase
         3. epoch == FLAGS.n_pretrain_epochs to get offline pre-trained performance
         4. every FLAGS.online_eval_every_n_env_steps for online phase
-        5. when replay_buffer.total_steps >= FLAGS.max_online_env_steps to get final fine-tuned performance
+        5. when replay_buffer.total_steps >= max_online_env_steps to get final fine-tuned performance
         """
-        do_eval = (epoch == 0 or (not is_online and epoch in offline_eval_epochs) or (epoch == FLAGS.n_pretrain_epochs) or (is_online and replay_buffer.total_steps // FLAGS.online_eval_every_n_env_steps > online_eval_counter) or (replay_buffer.total_steps >= FLAGS.max_online_env_steps))
+        do_eval = (epoch == 0 or (not is_online and epoch in offline_eval_epochs) or (epoch == FLAGS.n_pretrain_epochs) or (is_online and replay_buffer.total_steps // FLAGS.online_eval_every_n_env_steps > online_eval_counter) or (replay_buffer.total_steps >= max_online_env_steps))
             
         with Timer() as eval_timer:
             if do_eval:
@@ -301,7 +312,7 @@ def main(argv):
         logger.record_dict(viskit_metrics)
         logger.dump_tabular(with_prefix=False, with_timestamp=True)
 
-        if replay_buffer.total_steps >= FLAGS.max_online_env_steps:
+        if replay_buffer.total_steps >= max_online_env_steps:
             print("Finished Training")
             ft_eval_file.flush()
             ft_eval_file.close()
